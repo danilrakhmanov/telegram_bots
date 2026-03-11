@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  bot_findkzn:
+    build: ./bot_findkzn
+    container_name: bot_findkzn
+    restart: always
+    volumes:
+      - ./bot_findkzn/sessions:/app/sessions
+    stdin_open: true
+    tty: true
+
+  bot_oasismus:
+    build: ./bot_oasismus
+    container_name: bot_oasismus
+    restart: always
+    volumes:
+      - ./bot_oasismus/sessions:/app/sessions
+    stdin_open: true
+    tty: true
+
+  bot_omgkzn:
+    build: ./bot_omgkzn
+    container_name: bot_omgkzn
+    restart: always
+    volumes:
+      - ./bot_omgkzn/sessions:/app/sessions
+    stdin_open: true
+    tty: true
