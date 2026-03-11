@@ -7,6 +7,8 @@ services:
     restart: always
     volumes:
       - ./bot_findkzn/sessions:/app/sessions
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN_FINDKZN}
     stdin_open: true
     tty: true
 
@@ -16,14 +18,7 @@ services:
     restart: always
     volumes:
       - ./bot_oasismus/sessions:/app/sessions
-    stdin_open: true
-    tty: true
-
-  bot_omgkzn:
-    build: ./bot_omgkzn
-    container_name: bot_omgkzn
-    restart: always
-    volumes:
-      - ./bot_omgkzn/sessions:/app/sessions
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN_OASISMUS}
     stdin_open: true
     tty: true

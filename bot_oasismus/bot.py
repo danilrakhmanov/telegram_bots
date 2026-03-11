@@ -10,7 +10,8 @@ API_ID = 32031396
 API_HASH = '78266115dee64cff8e1fa7b509202756'
 PHONE_NUMBER = '+79274449798'
 
-BOT_TOKEN = '8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii1TfRAnQ'
+# Токен бота - брать из переменной окружения BOT_TOKEN
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii1TfRAnQ')
 
 # СПИСОК КАНАЛОВ-ИСТОЧНИКОВ
 SOURCE_CHANNELS = [
