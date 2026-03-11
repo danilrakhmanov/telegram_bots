@@ -18,12 +18,3 @@ services:
       - ./bot_oasismus/sessions:/app/sessions
     stdin_open: true
     tty: true
-
-  bot_omgkzn:
-    build: ./bot_omgkzn
-    container_name: bot_omgkzn
-    restart: always
-    volumes:
-      - ./bot_omgkzn/sessions:/app/sessions
-    stdin_open: true
-    tty: true

@@ -1,0 +1,6 @@
+@echo off
+echo Запуск всех ботов через docker-compose...
+docker-compose up --build
+echo.
+echo Нажмите любую клавишу для выхода...
+pause >nul
