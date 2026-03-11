@@ -1,6 +1,7 @@
 import asyncio
 import os
 import qrcode
+import re
 from telethon import TelegramClient, events, errors
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
 import time
@@ -10,27 +11,58 @@ API_ID = 32031396
 API_HASH = '78266115dee64cff8e1fa7b509202756'
 PHONE_NUMBER = '+79274449798'
 
-# Токен бота - брать из переменной окружения BOT_TOKEN
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii1TfRAnQ')
+BOT_TOKEN = '8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii1TfRAnQ'
 
 # СПИСОК КАНАЛОВ-ИСТОЧНИКОВ
 SOURCE_CHANNELS = [
-    '@stereoNWS',
+    '@kazancity',
 ]
 
-TARGET_CHANNEL = '@oasis_mus'  # Твой канал (куда постим)
-
-# Слова для игнорирования
-IGNORE_WORDS = [
-    'реклама', 'реклам', 'промокод', 'скидка',
-    'акция', 'спонсор', 'купон', 'партнерский', '#реклама'
-]
-
-# 👇 НАСТРОЙКА ПУБЛИКАЦИИ ПОСТОВ БЕЗ ТЕКСТА
-ALLOW_NO_TEXT_POSTS = False  # False = не публиковать посты без текста, True = публиковать
+TARGET_CHANNEL = '@omgkzn'  # Твой новостной канал
 
 # Время ожидания для сбора альбома (сек)
 ALBUM_WAIT_TIME = 1.5
+
+# Слова для игнорирования (посты с этими словами НЕ копируются)
+IGNORE_WORDS = [
+    'реклама',
+    'реклам',
+    'промокод',
+    'скидка',
+    'акция',
+    'спонсор',
+    'купон',
+    'партнерский',
+    '#реклама',
+    'подписывайтесь',
+    'зарегистрируйтесь',
+]
+
+# ========== НАСТРОЙКИ УДАЛЕНИЯ ФРАЗ ==========
+# Фразы для точного удаления
+REMOVE_PHRASES = [
+    'можно в наш бот',
+    'можно в наш __бот__',
+    'прислать ваше фото или видео можно в наш бот',
+    '👓 Казань на Максималках',
+    'Казань на Максималках',
+    'Telegram',
+    'ОТКРЫТЬ КАНАЛ',
+    '«Самый большой и читаемый канал Казани» по версии JournalTOP 2025',
+]
+
+# Шаблоны для удаления (регулярные выражения с учетом Markdown)
+REMOVE_PATTERNS = [
+    r'можно в наш.*?бот',  # можно в наш __бот__ или можно в наш бот
+    r'👓.*?\(https://t\.me/\w+\)',  # 👓____ (гиперссылка)
+    r'👓.*?https://t\.me/\w+',  # 👓____ https://t.me/...
+    r'Telegram\s*\n.*?ОТКРЫТЬ КАНАЛ',  # Блок с Telegram
+    r'«Самый большой и читаемый канал Казани».*?\n',  # Описание канала
+    r'ОТКРЫТЬ КАНАЛ.*?$',  # Кнопка
+    r'_+',  # Удаляем лишние подчеркивания
+    r'_{2,}',  # Два и более подчеркивания
+]
+# =============================================
 # ================================
 
 user_client = TelegramClient('user_session', API_ID, API_HASH)
@@ -41,17 +73,72 @@ is_running = True
 reconnect_delay = 5  # Задержка перед переподключением (сек)
 
 def check_ignore_words(text):
-    if not text: return False
+    """Проверяет наличие слов для игнорирования"""
+    if not text: 
+        return False
     text_lower = text.lower()
     for word in IGNORE_WORDS:
         if word.lower() in text_lower:
             return True
     return False
 
+def remove_unwanted_text(text):
+    """Удаляет ненужные фразы из текста"""
+    if not text:
+        return text
+    
+    original_text = text
+    
+    # Удаляем фразы из списка (без учета регистра)
+    for phrase in REMOVE_PHRASES:
+        text = re.sub(re.escape(phrase), '', text, flags=re.IGNORECASE)
+    
+    # Удаляем по шаблонам
+    for pattern in REMOVE_PATTERNS:
+        text = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Удаляем строки, содержащие ключевые слова
+    lines = text.split('\n')
+    filtered_lines = []
+    
+    for line in lines:
+        line_lower = line.lower()
+        # Пропускаем строки с нежелательным содержанием
+        if any(word in line_lower for word in [
+            'прислать ваше фото',
+            'в наш бот',
+            'на максималках',
+            'telegram',
+            'открыть канал',
+            'самый большой',
+            'читаемый канал',
+            'journaltop',
+            'можно в наш',
+        ]):
+            continue
+        filtered_lines.append(line)
+    
+    text = '\n'.join(filtered_lines)
+    
+    # Удаляем лишние подчеркивания в конце строк
+    text = re.sub(r'__+$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'_{2,}', '', text)
+    
+    # Чистим лишние пустые строки
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = text.strip()
+    
+    if text != original_text:
+        print("✂️ Текст очищен от лишней информации")
+    
+    return text
+
 def print_qr(url):
+    """Создает и выводит QR-код в консоль"""
     qr = qrcode.QRCode(version=1, box_size=2, border=1)
     qr.add_data(url)
     qr.make(fit=True)
+    
     matrix = qr.get_matrix()
     print("\n" + "=" * 50)
     for row in matrix:
@@ -62,6 +149,7 @@ def print_qr(url):
     print("=" * 50)
 
 async def qr_login_method():
+    """Вход через QR-код"""
     print("\n📱 Вход по QR-коду:")
     print("1. Открой Telegram на телефоне")
     print("2. Настройки → Устройства")
@@ -91,6 +179,7 @@ async def qr_login_method():
         return False
 
 async def code_login_method():
+    """Вход по коду из Telegram"""
     print("\n📱 Вход по коду:")
     try:
         await user_client.send_code_request(PHONE_NUMBER)
@@ -135,53 +224,51 @@ async def process_album(grouped_id, source_name):
             text_message = msg
             break
     
-    # 👇 ПРОВЕРКА НА НАЛИЧИЕ ТЕКСТА
-    if not ALLOW_NO_TEXT_POSTS and not text_message:
-        print(f"⏭️ Пропускаю альбом из {source_name} (нет текста)")
-        del media_groups[grouped_id]
-        return
-    
-    # Проверяем текст на стоп-слова
-    if text_message and text_message.text and check_ignore_words(text_message.text):
-        print(f"🚫 Игнорирую альбом из {source_name} (есть стоп-слово)")
-        del media_groups[grouped_id]
-        return
+    # Очищаем текст от ненужных фраз
+    cleaned_text = None
+    if text_message and text_message.text:
+        # Проверяем на стоп-слова
+        if check_ignore_words(text_message.text):
+            print(f"🚫 Игнорирую альбом из {source_name} (есть стоп-слово)")
+            del media_groups[grouped_id]
+            return
+        
+        # Очищаем текст
+        cleaned_text = remove_unwanted_text(text_message.text)
     
     print(f"📦 Копирую альбом из {len(messages)} элементов из {source_name}")
     
-    # Скачиваем все медиафайлы с определением типа
+    # Скачиваем все медиафайлы
     files = []
     for msg in messages:
         if msg.media:
-            # Определяем тип медиа
+            # Для видео используем прямую пересылку, для фото - скачивание
             if hasattr(msg.media, 'video') or hasattr(msg.media, 'document'):
-                # Для видео используем прямую пересылку (быстро)
+                # Видео пересылаем напрямую (быстрее)
                 files.append(msg)
             else:
-                # Для фото скачиваем
+                # Фото скачиваем и загружаем
                 file_path = await msg.download_media()
                 files.append(file_path)
     
     # Отправляем как альбом
     if files:
-        if text_message and text_message.text:
+        if cleaned_text:
             # Если есть текст, отправляем с ним
             await user_client.send_file(
                 TARGET_CHANNEL,
                 files,
-                caption=text_message.text,
-                parse_mode='md'
+                caption=cleaned_text,
+                parse_mode='md',
+                link_preview=False
             )
         else:
-            # Если текста нет, но разрешено, отправляем без caption
-            if ALLOW_NO_TEXT_POSTS:
-                await user_client.send_file(TARGET_CHANNEL, files)
-            else:
-                print(f"⏭️ Альбом без текста пропущен (настройки)")
+            # Если текста нет, отправляем без caption
+            await user_client.send_file(TARGET_CHANNEL, files)
         
         print(f"✅ Альбом из {len(files)} элементов скопирован")
     
-    # Удаляем временные файлы (только фото)
+    # Удаляем временные файлы (только фото, видео не скачивались)
     for file_path in files:
         if isinstance(file_path, str) and os.path.exists(file_path):
             os.remove(file_path)
@@ -194,14 +281,13 @@ async def run_bot():
     
     while is_running:
         try:
-            print("\n🔄 Запуск бота для красивого копирования постов...")
-            print(f"📝 Посты без текста: {'❌ ЗАПРЕЩЕНЫ' if not ALLOW_NO_TEXT_POSTS else '✅ РАЗРЕШЕНЫ'}")
+            print("\n🔄 Запуск новостного бота с очисткой текста...")
             
             await user_client.connect()
             
             if not await user_client.is_user_authorized():
                 print("\n📱 Выбери способ входа:")
-                print("1 - QR-код")
+                print("1 - QR-код (рекомендуется)")
                 print("2 - Код из Telegram/SMS")
                 
                 choice = input("\nТвой выбор (1/2): ").strip()
@@ -240,10 +326,11 @@ async def run_bot():
                 print("❌ Нет доступных каналов для отслеживания!")
                 return
             
-            print(f"\n📢 Отслеживаю каналы: {', '.join(SOURCE_CHANNELS)}")
+            print(f"\n📢 Каналы-источники ({len(valid_channels)} шт.):")
+            for channel in SOURCE_CHANNELS:
+                print(f"   • {channel}")
             print(f"📨 Канал-приемник: {TARGET_CHANNEL}")
             print(f"🚫 Игнорируемые слова: {', '.join(IGNORE_WORDS)}")
-            print(f"📝 Посты без текста: {'❌ ЗАПРЕЩЕНЫ' if not ALLOW_NO_TEXT_POSTS else '✅ РАЗРЕШЕНЫ'}")
             print("🟢 Бот работает... (нажми Ctrl+C для остановки)\n")
 
             @user_client.on(events.NewMessage(chats=valid_channels))
@@ -272,29 +359,27 @@ async def run_bot():
                         return
                     
                     # Одиночное сообщение (не альбом)
-                    
-                    # 👇 ПРОВЕРКА НА НАЛИЧИЕ ТЕКСТА
-                    if not ALLOW_NO_TEXT_POSTS and not message.text:
-                        print(f"⏭️ Пропускаю пост из {source_name} (нет текста)")
-                        return
-                    
                     # Проверяем текст на стоп-слова
                     if check_ignore_words(message.text or ""):
                         print(f"🚫 Игнорирую пост из {source_name} (есть стоп-слово)")
                         return
                     
+                    # Очищаем текст от ненужных фраз
+                    cleaned_text = remove_unwanted_text(message.text or "")
+                    
                     print(f"📥 Копирую пост из {source_name}")
                     
                     # Если есть медиа
                     if message.media:
-                        # Определяем тип медиа
+                        # Проверяем тип медиа
                         if hasattr(message.media, 'video') or hasattr(message.media, 'document'):
                             # Для видео используем прямую пересылку (быстро)
                             await user_client.send_file(
                                 TARGET_CHANNEL,
-                                message,  # Передаем само сообщение
-                                caption=message.text or "",
-                                parse_mode='md'
+                                message,  # Передаем само сообщение, а не файл
+                                caption=cleaned_text if cleaned_text else None,
+                                parse_mode='md',
+                                link_preview=False
                             )
                             print(f"✅ Видео скопировано быстро")
                         else:
@@ -303,20 +388,22 @@ async def run_bot():
                             await user_client.send_file(
                                 TARGET_CHANNEL,
                                 file_path,
-                                caption=message.text or "",
-                                parse_mode='md'
+                                caption=cleaned_text if cleaned_text else None,
+                                parse_mode='md',
+                                link_preview=False
                             )
                             if os.path.exists(file_path):
                                 os.remove(file_path)
                             print(f"✅ Фото скопировано")
                     
                     # Если только текст
-                    elif message.text:
-                        # Отправляем текст с Markdown форматированием
+                    elif cleaned_text:
+                        # Отправляем очищенный текст (без предпросмотра)
                         await user_client.send_message(
                             TARGET_CHANNEL,
-                            message.text,
-                            parse_mode='md'
+                            cleaned_text,
+                            parse_mode='md',
+                            link_preview=False
                         )
                         print(f"✅ Текстовый пост скопирован")
                             
@@ -334,7 +421,7 @@ async def run_bot():
             # Ждем отключения или ошибки
             await user_client.run_until_disconnected()
             
-        except (ConnectionError, OSError, errors.RPCError) as e:
+        except (ConnectionError, OSError, errors.RPCError, asyncio.TimeoutError) as e:
             print(f"❌ Ошибка соединения: {e}")
             print(f"🔄 Переподключение через {reconnect_delay} секунд...")
             await asyncio.sleep(reconnect_delay)
