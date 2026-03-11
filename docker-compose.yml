@@ -8,7 +8,7 @@ services:
     volumes:
       - ./bot_findkzn/sessions:/app/sessions
     environment:
-      - BOT_TOKEN=${BOT_TOKEN_FINDKZN}
+      - BOT_TOKEN=8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii1TfRAnQ
     stdin_open: true
     tty: true
 
@@ -19,6 +19,6 @@ services:
     volumes:
       - ./bot_oasismus/sessions:/app/sessions
     environment:
-      - BOT_TOKEN=${BOT_TOKEN_OASISMUS}
+      - BOT_TOKEN=8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii1TfRAnQ
     stdin_open: true
     tty: true
