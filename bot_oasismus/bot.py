@@ -26,6 +26,9 @@ IGNORE_WORDS = [
     'акция', 'спонсор', 'купон', 'партнерский', '#реклама'
 ]
 
+# 👇 НАСТРОЙКА ПУБЛИКАЦИИ ПОСТОВ БЕЗ ТЕКСТА
+ALLOW_NO_TEXT_POSTS = False  # False = не публиковать посты без текста, True = публиковать
+
 # Время ожидания для сбора альбома (сек)
 ALBUM_WAIT_TIME = 1.5
 # ================================
@@ -132,6 +135,12 @@ async def process_album(grouped_id, source_name):
             text_message = msg
             break
     
+    # 👇 ПРОВЕРКА НА НАЛИЧИЕ ТЕКСТА
+    if not ALLOW_NO_TEXT_POSTS and not text_message:
+        print(f"⏭️ Пропускаю альбом из {source_name} (нет текста)")
+        del media_groups[grouped_id]
+        return
+    
     # Проверяем текст на стоп-слова
     if text_message and text_message.text and check_ignore_words(text_message.text):
         print(f"🚫 Игнорирую альбом из {source_name} (есть стоп-слово)")
@@ -164,8 +173,11 @@ async def process_album(grouped_id, source_name):
                 parse_mode='md'
             )
         else:
-            # Если текста нет, отправляем без caption
-            await user_client.send_file(TARGET_CHANNEL, files)
+            # Если текста нет, но разрешено, отправляем без caption
+            if ALLOW_NO_TEXT_POSTS:
+                await user_client.send_file(TARGET_CHANNEL, files)
+            else:
+                print(f"⏭️ Альбом без текста пропущен (настройки)")
         
         print(f"✅ Альбом из {len(files)} элементов скопирован")
     
@@ -183,6 +195,7 @@ async def run_bot():
     while is_running:
         try:
             print("\n🔄 Запуск бота для красивого копирования постов...")
+            print(f"📝 Посты без текста: {'❌ ЗАПРЕЩЕНЫ' if not ALLOW_NO_TEXT_POSTS else '✅ РАЗРЕШЕНЫ'}")
             
             await user_client.connect()
             
@@ -230,6 +243,7 @@ async def run_bot():
             print(f"\n📢 Отслеживаю каналы: {', '.join(SOURCE_CHANNELS)}")
             print(f"📨 Канал-приемник: {TARGET_CHANNEL}")
             print(f"🚫 Игнорируемые слова: {', '.join(IGNORE_WORDS)}")
+            print(f"📝 Посты без текста: {'❌ ЗАПРЕЩЕНЫ' if not ALLOW_NO_TEXT_POSTS else '✅ РАЗРЕШЕНЫ'}")
             print("🟢 Бот работает... (нажми Ctrl+C для остановки)\n")
 
             @user_client.on(events.NewMessage(chats=valid_channels))
@@ -258,6 +272,12 @@ async def run_bot():
                         return
                     
                     # Одиночное сообщение (не альбом)
+                    
+                    # 👇 ПРОВЕРКА НА НАЛИЧИЕ ТЕКСТА
+                    if not ALLOW_NO_TEXT_POSTS and not message.text:
+                        print(f"⏭️ Пропускаю пост из {source_name} (нет текста)")
+                        return
+                    
                     # Проверяем текст на стоп-слова
                     if check_ignore_words(message.text or ""):
                         print(f"🚫 Игнорирую пост из {source_name} (есть стоп-слово)")
