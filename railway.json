@@ -1,5 +1,30 @@
 {
-  "build": {
-    "dockercompose": true
-  }
+  "services": [
+    {
+      "name": "bot_findkzn",
+      "root": "./bot_findkzn",
+      "dockerfilePath": "./Dockerfile",
+      "volumeMounts": [
+        {
+          "volume": "bot_findkzn_sessions",
+          "path": "/app/sessions"
+        }
+      ]
+    },
+    {
+      "name": "bot_oasismus",
+      "root": "./bot_oasismus",
+      "dockerfilePath": "./Dockerfile",
+      "volumeMounts": [
+        {
+          "volume": "bot_oasismus_sessions",
+          "path": "/app/sessions"
+        }
+      ]
+    }
+  ],
+  "volumes": [
+    { "name": "bot_findkzn_sessions" },
+    { "name": "bot_oasismus_sessions" }
+  ]
 }
