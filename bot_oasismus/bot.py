@@ -1,8 +1,7 @@
 import asyncio
 import os
 import qrcode
-import re
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, errors
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
 import time
 
@@ -13,35 +12,31 @@ PHONE_NUMBER = '+79274449798'
 
 BOT_TOKEN = '8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii1TfRAnQ'
 
-# СПИСОК КАНАЛОВ-ИСТОЧНИКОВ (можно добавлять сколько угодно)
+# СПИСОК КАНАЛОВ-ИСТОЧНИКОВ
 SOURCE_CHANNELS = [
     '@stereoNWS',
 ]
 
 TARGET_CHANNEL = '@oasis_mus'  # Твой канал (куда постим)
 
-DELAY = 0  # Задержка между постами
-
-# Слова для игнорирования (посты с этими словами НЕ копируются)
+# Слова для игнорирования
 IGNORE_WORDS = [
-    'реклама',
-    'реклам',
-    'промокод',
-    'скидка',
-    'акция',
-    'спонсор',
-    'купон',
-    'партнерский',
-    '#реклама',
+    'реклама', 'реклам', 'промокод', 'скидка',
+    'акция', 'спонсор', 'купон', 'партнерский', '#реклама'
 ]
+
+# Время ожидания для сбора альбома (сек)
+ALBUM_WAIT_TIME = 1.5
 # ================================
 
-# В Docker сессии лучше хранить в отдельной папке
-user_client = TelegramClient('sessions/user_session', API_ID, API_HASH)
-bot_client = TelegramClient('sessions/bot_session', API_ID, API_HASH)
+user_client = TelegramClient('user_session', API_ID, API_HASH)
+media_groups = {}
+
+# Флаг для работы
+is_running = True
+reconnect_delay = 5  # Задержка перед переподключением (сек)
 
 def check_ignore_words(text):
-    """Проверяет наличие слов для игнорирования"""
     if not text: return False
     text_lower = text.lower()
     for word in IGNORE_WORDS:
@@ -50,11 +45,9 @@ def check_ignore_words(text):
     return False
 
 def print_qr(url):
-    """Создает и выводит QR-код в консоль"""
     qr = qrcode.QRCode(version=1, box_size=2, border=1)
     qr.add_data(url)
     qr.make(fit=True)
-    
     matrix = qr.get_matrix()
     print("\n" + "=" * 50)
     for row in matrix:
@@ -65,7 +58,6 @@ def print_qr(url):
     print("=" * 50)
 
 async def qr_login_method():
-    """Вход через QR-код"""
     print("\n📱 Вход по QR-коду:")
     print("1. Открой Telegram на телефоне")
     print("2. Настройки → Устройства")
@@ -95,7 +87,6 @@ async def qr_login_method():
         return False
 
 async def code_login_method():
-    """Вход по коду из Telegram"""
     print("\n📱 Вход по коду:")
     try:
         await user_client.send_code_request(PHONE_NUMBER)
@@ -122,108 +113,229 @@ async def code_login_method():
         print(f"❌ Ошибка: {e}")
         return False
 
-async def main():
-    print("🔄 Запуск бота с очисткой текста...")
-    
-    await user_client.connect()
-    
-    if not await user_client.is_user_authorized():
-        print("\n📱 Выбери способ входа:")
-        print("1 - QR-код (рекомендуется)")
-        print("2 - Код из Telegram/SMS")
-        
-        choice = input("\nТвой выбор (1/2): ").strip()
-        
-        success = False
-        if choice == "1":
-            for attempt in range(3):
-                print(f"\n🔄 Попытка {attempt + 1}/3")
-                success = await qr_login_method()
-                if success:
-                    break
-                if attempt < 2:
-                    print("Пробую снова...")
-                    await asyncio.sleep(2)
-        else:
-            success = await code_login_method()
-        
-        if not success:
-            print("\n❌ Не удалось войти")
-            return
-        
-        print("✅ Авторизация успешна!")
-    
-    print("✅ Юзер-клиент авторизован")
-    
-    # Запускаем бота
-    try:
-        await bot_client.start(bot_token=BOT_TOKEN)
-        print("✅ Бот-клиент авторизован")
-    except Exception as e:
-        print(f"❌ Ошибка бота: {e}")
+async def process_album(grouped_id, source_name):
+    """Обрабатывает альбом после сбора всех сообщений"""
+    if grouped_id not in media_groups:
         return
     
-    # Выводим информацию о каналах
-    print(f"\n📢 Каналы-источники ({len(SOURCE_CHANNELS)} шт.):")
-    for i, channel in enumerate(SOURCE_CHANNELS, 1):
-        print(f"   {i}. {channel}")
-    print(f"📨 Канал-приемник: {TARGET_CHANNEL}")
-    print(f"🚫 Игнорируемые слова: {', '.join(IGNORE_WORDS)}")
-    print("🟢 Бот работает...\n")
+    album_data = media_groups[grouped_id]
+    messages = album_data['messages']
+    
+    # Сортируем сообщения по ID
+    messages.sort(key=lambda m: m.id)
+    
+    # Находим сообщение с текстом (обычно первое)
+    text_message = None
+    for msg in messages:
+        if msg.text:
+            text_message = msg
+            break
+    
+    # Проверяем текст на стоп-слова
+    if text_message and text_message.text and check_ignore_words(text_message.text):
+        print(f"🚫 Игнорирую альбом из {source_name} (есть стоп-слово)")
+        del media_groups[grouped_id]
+        return
+    
+    print(f"📦 Копирую альбом из {len(messages)} элементов из {source_name}")
+    
+    # Скачиваем все медиафайлы с определением типа
+    files = []
+    for msg in messages:
+        if msg.media:
+            # Определяем тип медиа
+            if hasattr(msg.media, 'video') or hasattr(msg.media, 'document'):
+                # Для видео используем прямую пересылку (быстро)
+                files.append(msg)
+            else:
+                # Для фото скачиваем
+                file_path = await msg.download_media()
+                files.append(file_path)
+    
+    # Отправляем как альбом
+    if files:
+        if text_message and text_message.text:
+            # Если есть текст, отправляем с ним
+            await user_client.send_file(
+                TARGET_CHANNEL,
+                files,
+                caption=text_message.text,
+                parse_mode='md'
+            )
+        else:
+            # Если текста нет, отправляем без caption
+            await user_client.send_file(TARGET_CHANNEL, files)
+        
+        print(f"✅ Альбом из {len(files)} элементов скопирован")
+    
+    # Удаляем временные файлы (только фото)
+    for file_path in files:
+        if isinstance(file_path, str) and os.path.exists(file_path):
+            os.remove(file_path)
+    
+    del media_groups[grouped_id]
 
-    # Создаем обработчик для ВСЕХ каналов из списка
-    @user_client.on(events.NewMessage(chats=SOURCE_CHANNELS))
-    async def copy_message(event):
+async def run_bot():
+    """Основная функция с автоматическим переподключением"""
+    global is_running
+    
+    while is_running:
         try:
-            message = event.message
-            message_text = message.text or ""
+            print("\n🔄 Запуск бота для красивого копирования постов...")
             
-            # Получаем информацию об источнике (только для лога)
-            chat = await event.get_chat()
-            source_name = getattr(chat, 'username', str(chat.id))
+            await user_client.connect()
             
-            # Проверяем на игнорируемые слова
-            if check_ignore_words(message_text):
-                print(f"🚫 Игнорирую пост из {source_name} (есть стоп-слово)")
+            if not await user_client.is_user_authorized():
+                print("\n📱 Выбери способ входа:")
+                print("1 - QR-код")
+                print("2 - Код из Telegram/SMS")
+                
+                choice = input("\nТвой выбор (1/2): ").strip()
+                
+                success = False
+                if choice == "1":
+                    for attempt in range(3):
+                        print(f"\n🔄 Попытка {attempt + 1}/3")
+                        success = await qr_login_method()
+                        if success:
+                            break
+                        if attempt < 2:
+                            print("Пробую снова...")
+                            await asyncio.sleep(2)
+                else:
+                    success = await code_login_method()
+                
+                if not success:
+                    print("\n❌ Не удалось войти")
+                    return
+            
+            print("✅ Юзер-клиент авторизован")
+            
+            # Проверяем каналы-источники
+            print("\n🔄 Проверяю каналы-источники:")
+            valid_channels = []
+            for channel in SOURCE_CHANNELS:
+                try:
+                    entity = await user_client.get_entity(channel)
+                    print(f"   ✅ Найден: {channel} (ID: {entity.id})")
+                    valid_channels.append(entity)
+                except Exception as e:
+                    print(f"   ❌ Ошибка с {channel}: {e}")
+            
+            if not valid_channels:
+                print("❌ Нет доступных каналов для отслеживания!")
                 return
             
-            # Удаляем ненужную фразу из текста
-            cleaned_text = remove_unwanted_text(message_text)
-            
-            await asyncio.sleep(DELAY)
-            print(f"📥 Новый пост из канала @{source_name}")
-            
-            # Копируем пост БЕЗ добавления "Источник:"
-            if message.media:
-                file_path = await message.download_media()
-                
-                # Отправляем только очищенный текст, без источника
-                await bot_client.send_file(
-                    TARGET_CHANNEL,
-                    file=file_path,
-                    caption=cleaned_text if cleaned_text else None
-                )
-                
-                if file_path and os.path.exists(file_path):
-                    os.remove(file_path)
+            print(f"\n📢 Отслеживаю каналы: {', '.join(SOURCE_CHANNELS)}")
+            print(f"📨 Канал-приемник: {TARGET_CHANNEL}")
+            print(f"🚫 Игнорируемые слова: {', '.join(IGNORE_WORDS)}")
+            print("🟢 Бот работает... (нажми Ctrl+C для остановки)\n")
+
+            @user_client.on(events.NewMessage(chats=valid_channels))
+            async def handle_message(event):
+                try:
+                    message = event.message
+                    chat = await event.get_chat()
+                    source_name = getattr(chat, 'username', str(chat.id))
                     
-                print(f"✅ Пост с медиа скопирован из {source_name}")
-            else:
-                if cleaned_text:
-                    # Отправляем только очищенный текст, без источника
-                    await bot_client.send_message(TARGET_CHANNEL, cleaned_text)
-                    print(f"✅ Текстовый пост скопирован из {source_name}")
+                    # Если это часть альбома
+                    if message.grouped_id:
+                        grouped_id = message.grouped_id
+                        
+                        # Создаем или обновляем запись об альбоме
+                        if grouped_id not in media_groups:
+                            media_groups[grouped_id] = {
+                                'messages': [message],
+                                'source': source_name
+                            }
+                            
+                            # Запускаем таймер для обработки альбома
+                            asyncio.create_task(delayed_process(grouped_id, source_name))
+                        else:
+                            media_groups[grouped_id]['messages'].append(message)
+                        
+                        return
                     
-        except FloodWaitError as e:
-            print(f"⚠️ Флуд-контроль: ждем {e.seconds}с")
-            await asyncio.sleep(e.seconds)
+                    # Одиночное сообщение (не альбом)
+                    # Проверяем текст на стоп-слова
+                    if check_ignore_words(message.text or ""):
+                        print(f"🚫 Игнорирую пост из {source_name} (есть стоп-слово)")
+                        return
+                    
+                    print(f"📥 Копирую пост из {source_name}")
+                    
+                    # Если есть медиа
+                    if message.media:
+                        # Определяем тип медиа
+                        if hasattr(message.media, 'video') or hasattr(message.media, 'document'):
+                            # Для видео используем прямую пересылку (быстро)
+                            await user_client.send_file(
+                                TARGET_CHANNEL,
+                                message,  # Передаем само сообщение
+                                caption=message.text or "",
+                                parse_mode='md'
+                            )
+                            print(f"✅ Видео скопировано быстро")
+                        else:
+                            # Для фото скачиваем и загружаем
+                            file_path = await message.download_media()
+                            await user_client.send_file(
+                                TARGET_CHANNEL,
+                                file_path,
+                                caption=message.text or "",
+                                parse_mode='md'
+                            )
+                            if os.path.exists(file_path):
+                                os.remove(file_path)
+                            print(f"✅ Фото скопировано")
+                    
+                    # Если только текст
+                    elif message.text:
+                        # Отправляем текст с Markdown форматированием
+                        await user_client.send_message(
+                            TARGET_CHANNEL,
+                            message.text,
+                            parse_mode='md'
+                        )
+                        print(f"✅ Текстовый пост скопирован")
+                            
+                except FloodWaitError as e:
+                    print(f"⚠️ Флуд-контроль: ждем {e.seconds}с")
+                    await asyncio.sleep(e.seconds)
+                except Exception as e:
+                    print(f"❌ Ошибка: {e}")
+
+            async def delayed_process(grouped_id, source_name):
+                """Задержка перед обработкой альбома"""
+                await asyncio.sleep(ALBUM_WAIT_TIME)
+                await process_album(grouped_id, source_name)
+            
+            # Ждем отключения или ошибки
+            await user_client.run_until_disconnected()
+            
+        except (ConnectionError, OSError, errors.RPCError) as e:
+            print(f"❌ Ошибка соединения: {e}")
+            print(f"🔄 Переподключение через {reconnect_delay} секунд...")
+            await asyncio.sleep(reconnect_delay)
+            continue
+        except KeyboardInterrupt:
+            print("\n🛑 Бот остановлен пользователем")
+            break
         except Exception as e:
-            print(f"❌ Ошибка копирования: {e}")
-    
+            print(f"❌ Неожиданная ошибка: {e}")
+            print(f"🔄 Переподключение через {reconnect_delay} секунд...")
+            await asyncio.sleep(reconnect_delay)
+            continue
+
+async def main():
+    global is_running
     try:
-        await user_client.run_until_disconnected()
-    except Exception as e:
-        print(f"❌ Соединение потеряно: {e}")
+        await run_bot()
+    except KeyboardInterrupt:
+        print("\n🛑 Бот остановлен")
+    finally:
+        is_running = False
+        await user_client.disconnect()
 
 if __name__ == '__main__':
     try:
