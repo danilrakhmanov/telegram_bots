@@ -16,9 +16,10 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii
 # СПИСОК КАНАЛОВ-ИСТОЧНИКОВ
 SOURCE_CHANNELS = [
     '@stereoNWS',
+    '@reklamaomg',
 ]
 
-TARGET_CHANNEL = '@oasis_mus'  # Твой канал (куда постим)
+TARGET_CHANNEL = '@findkzn_post'  # Твой канал (куда постим)
 
 # Слова для игнорирования
 IGNORE_WORDS = [
