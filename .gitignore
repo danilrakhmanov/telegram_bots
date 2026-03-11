@@ -11,6 +11,9 @@ env/
 # Telegram session files
 *.session
 
+# Environment variables
+.env
+
 # IDE
 .idea/
 .vscode/

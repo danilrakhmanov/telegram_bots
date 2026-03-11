@@ -6,7 +6,7 @@ services:
     container_name: bot_findkzn
     restart: always
     volumes:
-      - ./bot_findkzn/sessions:/app/sessions
+      - bot_findkzn_sessions:/app/sessions
     stdin_open: true
     tty: true
 
@@ -15,6 +15,10 @@ services:
     container_name: bot_oasismus
     restart: always
     volumes:
-      - ./bot_oasismus/sessions:/app/sessions
+      - bot_oasismus_sessions:/app/sessions
     stdin_open: true
     tty: true
+
+volumes:
+  bot_findkzn_sessions:
+  bot_oasismus_sessions:
