@@ -37,6 +37,7 @@ BOT_TOKEN = '8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii1TfRAnQ'
 SOURCE_CHANNELS = [
     '@kazan_itch',
     '@poisk_kzn1166',
+    '@findkzn_post',
 ]
 
 TARGET_CHANNEL = '@findkzn'  # Твой канал (куда постим)
