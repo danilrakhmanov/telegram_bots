@@ -33,7 +33,7 @@ ALLOW_NO_TEXT_POSTS = False  # False = не публиковать посты б
 ALBUM_WAIT_TIME = 1.5
 # ================================
 
-user_client = TelegramClient('user_session', API_ID, API_HASH)
+user_client = TelegramClient('user_session_oasismus', API_ID, API_HASH)
 media_groups = {}
 
 # Флаг для работы
@@ -151,10 +151,14 @@ async def process_album(grouped_id, source_name):
     
     # Скачиваем все медиафайлы с определением типа
     files = []
+    from telethon.types import MessageMediaDocument
+    
     for msg in messages:
         if msg.media:
             # Определяем тип медиа
-            if hasattr(msg.media, 'video') or hasattr(msg.media, 'document'):
+            is_video = isinstance(msg.media, MessageMediaDocument) and msg.media.document.mime_type.startswith('video/')
+            
+            if is_video:
                 # Для видео используем прямую пересылку (быстро)
                 files.append(msg)
             else:
@@ -184,7 +188,10 @@ async def process_album(grouped_id, source_name):
     # Удаляем временные файлы (только фото)
     for file_path in files:
         if isinstance(file_path, str) and os.path.exists(file_path):
-            os.remove(file_path)
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"⚠️ Не удалось удалить файл {file_path}: {e}")
     
     del media_groups[grouped_id]
 
@@ -288,7 +295,10 @@ async def run_bot():
                     # Если есть медиа
                     if message.media:
                         # Определяем тип медиа
-                        if hasattr(message.media, 'video') or hasattr(message.media, 'document'):
+                        from telethon.types import MessageMediaDocument
+                        is_video = isinstance(message.media, MessageMediaDocument) and message.media.document.mime_type.startswith('video/')
+                        
+                        if is_video:
                             # Для видео используем прямую пересылку (быстро)
                             await user_client.send_file(
                                 TARGET_CHANNEL,
@@ -299,15 +309,21 @@ async def run_bot():
                             print(f"✅ Видео скопировано быстро")
                         else:
                             # Для фото скачиваем и загружаем
-                            file_path = await message.download_media()
-                            await user_client.send_file(
-                                TARGET_CHANNEL,
-                                file_path,
-                                caption=message.text or "",
-                                parse_mode='md'
-                            )
-                            if os.path.exists(file_path):
-                                os.remove(file_path)
+                            file_path = None
+                            try:
+                                file_path = await message.download_media()
+                                await user_client.send_file(
+                                    TARGET_CHANNEL,
+                                    file_path,
+                                    caption=message.text or "",
+                                    parse_mode='md'
+                                )
+                            finally:
+                                if file_path and os.path.exists(file_path):
+                                    try:
+                                        os.remove(file_path)
+                                    except Exception as e:
+                                        print(f"⚠️ Не удалось удалить файл: {e}")
                             print(f"✅ Фото скопировано")
                     
                     # Если только текст

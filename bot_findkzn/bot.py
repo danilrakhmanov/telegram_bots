@@ -47,6 +47,9 @@ DELAY = 0  # Задержка между постами
 # 👇 НАСТРОЙКА ПРОЦЕНТА ПОСТОВ
 POST_PROBABILITY = 0.3  # 30% постов будут скопированы
 
+# Канал с 100% копированием постов
+FULL_COPY_CHANNEL = '@findkzn_post'
+
 # 👇 НАСТРОЙКИ ПЕРЕПОДКЛЮЧЕНИЯ
 RECONNECT_DELAY = 5  # Задержка перед переподключением (сек)
 # =================================
@@ -143,8 +146,8 @@ IGNORE_WORDS = [
 # ================================
 
 # В Docker сессии лучше хранить в отдельной папке
-user_client = TelegramClient('user_session', API_ID, API_HASH)
-bot_client = TelegramClient('bot_session', API_ID, API_HASH)
+user_client = TelegramClient('user_session_findkzn', API_ID, API_HASH)
+bot_client = TelegramClient('bot_session_findkzn', API_ID, API_HASH)
 
 # Флаг для graceful shutdown
 is_running = True
@@ -158,8 +161,11 @@ def check_ignore_words(text):
             return True
     return False
 
-def should_take_post():
-    """Определяет, нужно ли взять пост (30% вероятность)"""
+def should_take_post(source_name=None):
+    """Определяет, нужно ли взять пост"""
+    # Если это канал с полным копированием - берём всегда
+    if source_name == FULL_COPY_CHANNEL:
+        return True
     return random.random() < POST_PROBABILITY
 
 def print_qr(url):
@@ -303,7 +309,7 @@ async def run_bot():
                 try:
                     entity = await user_client.get_entity(channel)
                     print(f"   ✅ Найден: {channel} (ID: {entity.id})")
-                    valid_channels.append(channel)
+                    valid_channels.append(entity)
                 except Exception as e:
                     print(f"   ❌ Ошибка с {channel}: {e}")
             
@@ -314,7 +320,10 @@ async def run_bot():
             # Выводим информацию о каналах
             print(f"\n📢 Каналы-источники ({len(SOURCE_CHANNELS)} шт.):")
             for i, channel in enumerate(SOURCE_CHANNELS, 1):
-                print(f"   {i}. {channel}")
+                if channel == FULL_COPY_CHANNEL:
+                    print(f"   {i}. {channel} (100% копирование)")
+                else:
+                    print(f"   {i}. {channel}")
             print(f"📨 Канал-приемник: {TARGET_CHANNEL}")
             print(f"🚫 Игнорируемые слова: {', '.join(IGNORE_WORDS)}")
             print(f"🔗 Добавление промо-ссылок: {'ВКЛ' if ADD_PROMO_ENABLED else 'ВЫКЛ'}")
@@ -336,8 +345,9 @@ async def run_bot():
                     source_name = getattr(chat, 'username', str(chat.id))
                     
                     # Решаем, брать пост или нет
-                    if not should_take_post():
-                        print(f"⏭️ Пропускаю пост из {source_name} (не попал в {POST_PROBABILITY*100}%)")
+                    if not should_take_post(source_name):
+                        prob = 100 if source_name == FULL_COPY_CHANNEL else POST_PROBABILITY * 100
+                        print(f"⏭️ Пропускаю пост из {source_name} (не попал в {prob}%)")
                         return
                     
                     # Проверяем на игнорируемые слова
@@ -352,12 +362,16 @@ async def run_bot():
                     final_text = add_promo_links(cleaned_text)
                     
                     await asyncio.sleep(DELAY)
-                    print(f"📥 Копирую пост из {source_name} (попал в {POST_PROBABILITY*100}%)")
+                    prob = 100 if source_name == FULL_COPY_CHANNEL else POST_PROBABILITY * 100
+                    print(f"📥 Копирую пост из {source_name} (попал в {prob}%)")
                     
                     # Копируем пост с промо-ссылками
                     if message.media:
                         # Проверяем тип медиа
-                        if hasattr(message.media, 'video') or hasattr(message.media, 'document'):
+                        from telethon.types import MessageMediaDocument
+                        is_video = isinstance(message.media, MessageMediaDocument) and message.media.document.mime_type.startswith('video/')
+                        
+                        if is_video:
                             # Для видео используем прямую пересылку
                             await bot_client.send_file(
                                 TARGET_CHANNEL,
@@ -369,16 +383,22 @@ async def run_bot():
                             print(f"✅ Видео скопировано быстро из {source_name}")
                         else:
                             # Для фото скачиваем и загружаем
-                            file_path = await message.download_media()
-                            await bot_client.send_file(
-                                TARGET_CHANNEL,
-                                file=file_path,
-                                caption=final_text if final_text else None,
-                                parse_mode='md',
-                                link_preview=False
-                            )
-                            if file_path and os.path.exists(file_path):
-                                os.remove(file_path)
+                            file_path = None
+                            try:
+                                file_path = await message.download_media()
+                                await bot_client.send_file(
+                                    TARGET_CHANNEL,
+                                    file=file_path,
+                                    caption=final_text if final_text else None,
+                                    parse_mode='md',
+                                    link_preview=False
+                                )
+                            finally:
+                                if file_path and os.path.exists(file_path):
+                                    try:
+                                        os.remove(file_path)
+                                    except Exception as e:
+                                        print(f"⚠️ Не удалось удалить файл: {e}")
                             print(f"✅ Фото скопировано из {source_name}")
                     else:
                         if final_text:
