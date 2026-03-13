@@ -1,25 +1,20 @@
-# Используем официальный образ Python
-FROM python:3.11-slim
+# Используем официальный Python образ
+FROM python:3.9-slim
 
-# Устанавливаем рабочую директорию
+# Создаем рабочую директорию
 WORKDIR /app
-
-# Устанавливаем системные зависимости
-RUN apt-get update && apt-get install -y \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
 
 # Копируем файл с зависимостями
 COPY requirements.txt .
 
-# Устанавливаем Python зависимости
+# Устанавливаем зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем весь проект
-COPY . .
+# Копируем код бота
+COPY bot.py .
 
-# Создаем volume для хранения сессий
-VOLUME ["/app/sessions"]
+# Создаем папку для сессий (чтобы не потерять при перезапуске)
+RUN mkdir -p /app/sessions
 
 # Запускаем бота
 CMD ["python", "bot.py"]

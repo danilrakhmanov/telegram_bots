@@ -3,15 +3,17 @@ import os
 import qrcode
 from telethon import TelegramClient, events, errors
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.tl.types import MessageEntityTextUrl, MessageEntityBold, MessageEntityItalic, MessageEntityCode, MessageEntityPre, MessageEntityUnderline, MessageEntityStrike
 import time
 import requests
 import json
 import uuid
-import re
 import random
-from typing import Optional, Tuple, Dict, List
+import re
+from typing import Optional, Dict, Any, List, Tuple
 import warnings
 from urllib3.exceptions import InsecureRequestWarning
+from datetime import datetime, timedelta
 
 # Отключаем предупреждения о SSL (для GigaChat)
 warnings.simplefilter('ignore', InsecureRequestWarning)
@@ -27,199 +29,152 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii
 # СПИСОК КАНАЛОВ-ИСТОЧНИКОВ
 SOURCE_CHANNELS = [
     '@stereoNWS',
+    '@oasis_musp'
 ]
 
-TARGET_CHANNEL = '@oasis_mus'  # Твой канал (куда постим)
+TARGET_CHANNEL = '@reklamaomg'  # Твой канал (куда постим)
 
-# Слова для игнорирования
+# ========== НАСТРОЙКИ ДЛЯ РАЗНЫХ КАНАЛОВ ==========
+
+# Канал-исключение (100% публикация, без стоп-слов)
+EXCEPTION_CHANNEL = '@oasis_musp'
+
+# Стоп-слова (не работают для канала-исключения)
 IGNORE_WORDS = [
     'реклама', 'реклам', 'промокод', 'скидка',
-    'акция', 'спонсор', 'купон', 'партнерский', '#реклама', 'ГРЯДУЩИЕ НОВИНКИ'
+    'акция', 'спонсор', 'купон', 'партнерский', '#реклама', 'СЛУШАТЬ!', 'ГРЯДУЩИЕ НОВИНКИ'
 ]
+
+# НАСТРОЙКИ ПО УМОЛЧАНИЮ (для всех каналов, кроме исключения)
+DEFAULT_POST_PROBABILITY = 0.6  # 60% постов
+DEFAULT_REWRITE_PROBABILITY = 0.8  # 80% рерайт
+
+# НАСТРОЙКИ ДЛЯ КАНАЛА-ИСКЛЮЧЕНИЯ
+EXCEPTION_POST_PROBABILITY = 1.0  # 100% постов
+EXCEPTION_REWRITE_PROBABILITY = 0.8  # 80% рерайт
+EXCEPTION_IGNORE_WORDS = []  # Нет стоп-слов
+
+# =================================================
+
+# 👇 НАСТРОЙКА ПУБЛИКАЦИИ ПОСТОВ БЕЗ ТЕКСТА
+ALLOW_NO_TEXT_POSTS = False
 
 # ========== НАСТРОЙКА GIGACHAT ==========
 USE_GIGACHAT = True
 
 # Данные для авторизации
+GIGACHAT_CLIENT_ID = '019ce2bd-3dd4-7673-91c1-1197d552d34c'
+GIGACHAT_CLIENT_SECRET = 'aaf4b627-fa9d-4572-a358-9ed5a96e3ee4'
 GIGACHAT_AUTH_DATA = 'MDE5Y2UyYmQtM2RkNC03NjczLTkxYzEtMTE5N2Q1NTJkMzRjOmFhZjRiNjI3LWZhOWQtNDU3Mi1hMzU4LTllZDVhOTZlM2VlNA=='
 GIGACHAT_SCOPE = 'GIGACHAT_API_PERS'
 
-# 👇 ВЫБОР МОДЕЛИ GIGACHAT
-GIGACHAT_MODEL = "GigaChat"  # Используем базовую модель (Lite) - 900k токенов
+# ========== НАСТРОЙКА МОДЕЛЕЙ И ЭКОНОМИИ ТОКЕНОВ ==========
 
-# 👇 ОПТИМИЗАЦИЯ РАСХОДА ТОКЕНОВ
-MIN_TEXT_LENGTH_FOR_REWRITE = 50  # символов
-REWRITE_PROBABILITY = 0.7  # 70% постов будем рерайтить
-MAX_TEXT_LENGTH = 1000  # символов
+MODELS_CONFIG = {
+    "GigaChat": {
+        "name": "GigaChat",
+        "description": "Базовая модель, быстрая и экономичная",
+        "daily_limit": 900000,
+        "cost_per_request": 100,
+        "quality": "medium",
+        "recommended_for": "обычные посты"
+    },
+    "GigaChat-Pro": {
+        "name": "GigaChat-Pro",
+        "description": "Улучшенная модель, лучше следует инструкциям",
+        "daily_limit": 49123,
+        "cost_per_request": 300,
+        "quality": "high",
+        "recommended_for": "важные посты, сложный рерайт"
+    },
+    "GigaChat-Max": {
+        "name": "GigaChat-Max",
+        "description": "Максимальное качество для сложных задач",
+        "daily_limit": 36791,
+        "cost_per_request": 500,
+        "quality": "very_high",
+        "recommended_for": "очень важные посты, креативные задачи"
+    }
+}
 
-# =========================================
+SELECTED_MODEL = "GigaChat"
 
-# 👇 НАСТРОЙКА ПУБЛИКАЦИИ ПОСТОВ БЕЗ ТЕКСТА
-ALLOW_NO_TEXT_POSTS = False
-
-# Время ожидания для сбора альбома (сек)
+# ========== НАСТРОЙКИ ЭКОНОМИИ ТОКЕНОВ ==========
+MIN_TEXT_LENGTH_FOR_REWRITE = 50
+MAX_TEXT_LENGTH = 1500
+USE_SMART_MODEL_SELECTION = False
+DAILY_TOKEN_LIMIT = 100000
+daily_tokens_used = 0
+last_token_reset = datetime.now()
+USE_CACHE = True
+rewrite_cache = {}
+CACHE_MAX_SIZE = 100
 ALBUM_WAIT_TIME = 1.5
+
 # ================================
 
-class TextProtector:
-    """Класс для защиты специальных элементов текста при рерайте"""
-    
-    # Регулярное выражение для поиска эмодзи
-    EMOJI_PATTERN = re.compile(
-        '['
-        '\U0001F600-\U0001F64F'  # эмоции
-        '\U0001F300-\U0001F5FF'  # символы и пиктограммы
-        '\U0001F680-\U0001F6FF'  # транспорт и символы
-        '\U0001F700-\U0001F77F'  # алхимические символы
-        '\U0001F780-\U0001F7FF'  # геометрические фигуры
-        '\U0001F800-\U0001F8FF'  # дополнительные стрелки
-        '\U0001F900-\U0001F9FF'  # дополнительные символы
-        '\U0001FA00-\U0001FA6F'  # дополнительные пиктограммы
-        '\U0001FA70-\U0001FAFF'  # дополнительные символы
-        '\U00002702-\U000027B0'  # декоративные символы
-        '\U000024C2-\U0001F251' 
-        ']+',
-        flags=re.UNICODE
-    )
-    
-    # Регулярные выражения для кавычек разных типов
-    QUOTE_PATTERNS = [
-        # Двойные кавычки "текст"
-        (r'"([^"\\]*(\\.[^"\\]*)*)"', '【DOUBLE_QUOTE_{}】'),
-        # Одинарные кавычки 'текст'
-        (r"'([^'\\]*(\\.[^'\\]*)*)'", '【SINGLE_QUOTE_{}】'),
-        # Елочки «текст»
-        (r'«([^»]*)»', '【ANGLE_QUOTE_{}】'),
-        # Лапки „текст“
-        (r'„([^“]*)“', '【LOW_QUOTE_{}】'),
-        # Марровские кавычки „текст“
-        (r'‚([^‘]*)‘', '【LOW_SINGLE_QUOTE_{}】'),
-        # Двойные лапки "текст" (альтернатива)
-        (r'“([^”]*)”', '【CURLY_DOUBLE_QUOTE_{}】'),
-        # Одинарные лапки 'текст' (альтернатива)
-        (r'‘([^’]*)’', '【CURLY_SINGLE_QUOTE_{}】'),
-    ]
+class TextFormatter:
+    """Класс для работы с форматированием текста"""
     
     @staticmethod
-    def extract_all_protected(text: str) -> Tuple[str, Dict[str, str]]:
+    def preserve_formatting(text: str, entities: List) -> str:
         """
-        Извлекает все защищенные элементы (эмодзи и текст в кавычках)
-        
-        Returns:
-            Tuple[str, Dict[str, str]]: (текст с плейсхолдерами, словарь {плейсхолдер: оригинал})
+        Сохраняет форматирование из entities
         """
-        protected_elements = {}
+        if not entities:
+            return text
         
-        # Сначала защищаем эмодзи
-        text, emoji_dict = TextProtector._extract_emojis(text)
-        protected_elements.update(emoji_dict)
+        # Сортируем сущности в обратном порядке
+        sorted_entities = sorted(entities, key=lambda e: e.offset, reverse=True)
         
-        # Затем защищаем текст в кавычках
-        text, quotes_dict = TextProtector._extract_quotes(text)
-        protected_elements.update(quotes_dict)
-        
-        return text, protected_elements
-    
-    @staticmethod
-    def _extract_emojis(text: str) -> Tuple[str, Dict[str, str]]:
-        """Извлекает только эмодзи"""
-        emojis = {}
-        emoji_list = TextProtector.EMOJI_PATTERN.findall(text)
-        text_with_placeholders = text
-        
-        for i, emoji in enumerate(emoji_list):
-            placeholder = f"【EMOJI_{i}】"
-            emojis[placeholder] = emoji
-            text_with_placeholders = text_with_placeholders.replace(emoji, placeholder, 1)
-        
-        if emojis:
-            print(f"😊 Найдено эмодзи: {len(emojis)} шт.")
-        
-        return text_with_placeholders, emojis
-    
-    @staticmethod
-    def _extract_quotes(text: str) -> Tuple[str, Dict[str, str]]:
-        """Извлекает текст в кавычках"""
-        quotes = {}
-        text_with_placeholders = text
-        quote_counter = 0
-        
-        for pattern, placeholder_template in TextProtector.QUOTE_PATTERNS:
-            def replacer(match):
-                nonlocal quote_counter
-                full_match = match.group(0)  # Вся цитата вместе с кавычками
-                placeholder = placeholder_template.format(quote_counter)
-                quotes[placeholder] = full_match
-                quote_counter += 1
-                return placeholder
+        formatted_text = text
+        for entity in sorted_entities:
+            start = entity.offset
+            end = start + entity.length
+            entity_text = formatted_text[start:end]
             
-            # Применяем замену для текущего типа кавычек
-            text_with_placeholders = re.sub(pattern, replacer, text_with_placeholders, flags=re.DOTALL)
+            if isinstance(entity, MessageEntityBold):
+                formatted_text = formatted_text[:start] + f'**{entity_text}**' + formatted_text[end:]
+            elif isinstance(entity, MessageEntityItalic):
+                formatted_text = formatted_text[:start] + f'__{entity_text}__' + formatted_text[end:]
+            elif isinstance(entity, MessageEntityUnderline):
+                formatted_text = formatted_text[:start] + f'__{entity_text}__' + formatted_text[end:]
+            elif isinstance(entity, MessageEntityStrike):
+                formatted_text = formatted_text[:start] + f'~{entity_text}~' + formatted_text[end:]
+            elif isinstance(entity, MessageEntityTextUrl):
+                formatted_text = formatted_text[:start] + f'[{entity_text}]({entity.url})' + formatted_text[end:]
         
-        if quotes:
-            quote_types = {
-                'DOUBLE_QUOTE': '"',
-                'SINGLE_QUOTE': "'",
-                'ANGLE_QUOTE': '«»',
-                'LOW_QUOTE': '„“',
-                'LOW_SINGLE_QUOTE': '‚‘',
-                'CURLY_DOUBLE_QUOTE': '“”',
-                'CURLY_SINGLE_QUOTE': '‘’',
-            }
-            print(f"📝 Найдено цитат: {len(quotes)} шт.")
-        
-        return text_with_placeholders, quotes
-    
-    @staticmethod
-    def restore_all(text: str, protected_elements: Dict[str, str]) -> str:
-        """
-        Восстанавливает все защищенные элементы
-        """
-        restored_text = text
-        for placeholder, original in protected_elements.items():
-            restored_text = restored_text.replace(placeholder, original)
-        return restored_text
-    
-    @staticmethod
-    def protect_text(func):
-        """
-        Декоратор для защиты всех элементов в тексте
-        """
-        def wrapper(self, text, *args, **kwargs):
-            # Сохраняем все защищенные элементы
-            text_with_placeholders, protected_elements = TextProtector.extract_all_protected(text)
-            
-            # Если ничего не защищали, просто обрабатываем текст
-            if not protected_elements:
-                return func(self, text, *args, **kwargs)
-            
-            print(f"🛡️ Защищено элементов: {len(protected_elements)}")
-            
-            # Обрабатываем текст без защищенных элементов
-            result = func(self, text_with_placeholders, *args, **kwargs)
-            
-            # Восстанавливаем все элементы
-            if result and isinstance(result, str):
-                result = TextProtector.restore_all(result, protected_elements)
-            
-            return result
-        return wrapper
+        return formatted_text
 
 class GigaChatAPI:
     """Класс для работы с GigaChat API"""
     
-    def __init__(self, auth_data: str, scope: str, model: str = "GigaChat"):
+    def __init__(self, auth_data: str, scope: str, model_configs: Dict, selected_model: str):
         self.auth_data = auth_data
         self.scope = scope
-        self.model = model
+        self.model_configs = model_configs
+        self.selected_model = selected_model
+        self.current_model = selected_model
         self.access_token = None
         self.token_expires = 0
         self.total_tokens_used = 0
         self.requests_count = 0
-        self.text_protector = TextProtector()
+        self.daily_tokens = 0
+        self.last_reset = datetime.now()
+        self.model_stats = {model: {"requests": 0, "tokens": 0} for model in model_configs}
         
+    def _reset_daily_counter(self):
+        now = datetime.now()
+        if now.date() > self.last_reset.date():
+            self.daily_tokens = 0
+            self.last_reset = now
+            print("📊 Дневной лимит токенов сброшен")
+    
+    def _check_daily_limit(self) -> bool:
+        self._reset_daily_counter()
+        return self.daily_tokens < DAILY_TOKEN_LIMIT
+    
     def get_access_token(self) -> Optional[str]:
-        """Получение access токена"""
         if self.access_token and time.time() < self.token_expires:
             return self.access_token
             
@@ -246,7 +201,7 @@ class GigaChatAPI:
                     self.token_expires = time.time() + expires_in - 60
                     print(f"✅ Токен GigaChat получен, действует {expires_in} сек")
                 else:
-                    print("⚠️ Нет информации о времени жизни токена, использую 30 минут")
+                    print("ℹ️ Токен получен (срок не указан, использую 30 минут)")
                     self.token_expires = time.time() + 1800 - 60
                 
                 return self.access_token
@@ -258,18 +213,28 @@ class GigaChatAPI:
             print(f"❌ Ошибка подключения к GigaChat: {e}")
             return None
     
-    @TextProtector.protect_text
+    def _get_cache_key(self, text: str) -> str:
+        import hashlib
+        return hashlib.md5(text.encode()).hexdigest()
+    
     def rewrite_text(self, text: str) -> Optional[str]:
-        """Отправка текста на рерайт в GigaChat с защитой всех элементов"""
+        """Отправка текста на рерайт"""
+        
         if not text or len(text.strip()) < MIN_TEXT_LENGTH_FOR_REWRITE:
+            print(f"⏭️ Текст слишком короткий ({len(text)} символов), пропускаю рерайт")
             return text
         
-        # Случайный выбор - рерайтить или нет
-        if random.random() > REWRITE_PROBABILITY:
-            print("⏭️ Пропускаю рерайт (экономия токенов)")
+        if not self._check_daily_limit():
+            print("⚠️ Дневной лимит токенов превышен, пропускаю рерайт")
             return text
         
-        # Обрезаем длинные тексты
+        # Проверка кэша
+        if USE_CACHE:
+            cache_key = self._get_cache_key(text)
+            if cache_key in rewrite_cache:
+                print("📦 Использую кэшированный результат")
+                return rewrite_cache[cache_key]
+        
         original_text = text
         if len(text) > MAX_TEXT_LENGTH:
             text = text[:MAX_TEXT_LENGTH] + "..."
@@ -286,58 +251,50 @@ class GigaChatAPI:
             'Authorization': f'Bearer {token}'
         }
         
-        # Промпт с инструкцией сохранять все защищенные элементы
-        system_prompt = """Ты помогаешь переписывать тексты для Telegram канала. 
+        system_prompt = """Ты помогаешь переписывать тексты. 
+Твоя задача: перефразировать текст, сохраняя смысл, но меняя форму изложения.
+Не добавляй ничего от себя, не удаляй важную информацию, особенно цитаты.
+Сохраняй все эмодзи и ссылки без изменений."""
 
-ВАЖНЫЕ ПРАВИЛА:
-1. Сохраняй ВСЕ эмодзи на своих местах! 😊 🎉 👍
-2. Сохраняй ВЕСЬ текст в кавычках БЕЗ ИЗМЕНЕНИЙ! 
-   - Текст в "двойных кавычках" должен остаться точно таким же
-   - Текст в «кавычках-елочках» должен остаться точно таким же
-   - Текст в 'одинарных кавычках' должен остаться точно таким же
-   - Текст в „разных“ видах кавычек должен остаться без изменений
-3. Меняй только обычный текст вокруг кавычек и эмодзи
-4. Не удаляй и не изменяй содержимое кавычек
-
-Перефразируй текст, сохраняя смысл, но меняя форму изложения вне кавычек."""
-
-        user_prompt = f"""Перепиши этот текст, сохраняя ВСЕ эмодзи и ВЕСЬ текст в кавычках без изменений:
+        user_prompt = f"""Перепиши следующий текст, сохраняя все эмодзи. Не трогай цитаты или строчки песен!:
 
 {text}"""
         
         data = {
-            "model": self.model,
+            "model": self.selected_model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            "temperature": 0.7,
+            "temperature": 0.8,
             "max_tokens": 1000,
         }
         
         try:
+            print(f"🔄 Отправляю запрос в GigaChat...")
             response = requests.post(url, headers=headers, json=data, verify=False, timeout=30)
             
             if response.status_code == 200:
                 result = response.json()
                 
-                # Подсчет использованных токенов
                 if 'usage' in result:
-                    self.total_tokens_used += result['usage'].get('total_tokens', 0)
+                    tokens_used = result['usage'].get('total_tokens', 0)
+                    self.total_tokens_used += tokens_used
+                    self.daily_tokens += tokens_used
                     self.requests_count += 1
-                    print(f"📊 Токенов использовано: {result['usage'].get('total_tokens', 0)}")
+                    print(f"📊 Токенов использовано: {tokens_used}")
                 
-                # Извлекаем текст
                 if 'choices' in result and len(result['choices']) > 0:
                     rewritten = result['choices'][0]['message']['content']
                     rewritten = rewritten.strip('"').strip("'")
                     
-                    # Проверяем, что результат не пустой
-                    if rewritten and len(rewritten) > 10:
-                        print("✨ Текст обработан GigaChat")
+                    if USE_CACHE and len(rewrite_cache) < CACHE_MAX_SIZE:
+                        rewrite_cache[self._get_cache_key(original_text)] = rewritten
+                    
+                    if rewritten != original_text:
+                        print(f"✨ Текст успешно обработан GigaChat")
                         return rewritten
                     else:
-                        print("⚠️ Результат слишком короткий, использую оригинал")
                         return original_text
             else:
                 print(f"❌ Ошибка GigaChat API: {response.status_code}")
@@ -349,122 +306,119 @@ class GigaChatAPI:
 
 # Инициализируем GigaChat
 if USE_GIGACHAT:
-    gigachat = GigaChatAPI(GIGACHAT_AUTH_DATA, GIGACHAT_SCOPE, GIGACHAT_MODEL)
-    print(f"🤖 GigaChat инициализирован с моделью: {GIGACHAT_MODEL}")
-    print(f"😊 Защита эмодзи: ВКЛЮЧЕНА")
-    print(f"📝 Защита текста в кавычках: ВКЛЮЧЕНА")
+    gigachat = GigaChatAPI(GIGACHAT_AUTH_DATA, GIGACHAT_SCOPE, MODELS_CONFIG, SELECTED_MODEL)
+    print(f"🤖 GigaChat инициализирован")
+    print(f"   Выбранная модель: {SELECTED_MODEL}")
+    
+    print(f"\n📊 НАСТРОЙКИ КАНАЛОВ:")
+    print(f"   📍 По умолчанию для всех каналов:")
+    print(f"      • Вероятность поста: {DEFAULT_POST_PROBABILITY*100}%")
+    print(f"      • Вероятность рерайта: {DEFAULT_REWRITE_PROBABILITY*100}%")
+    print(f"   ⭐ Исключение для {EXCEPTION_CHANNEL}:")
+    print(f"      • Вероятность поста: {EXCEPTION_POST_PROBABILITY*100}%")
+    print(f"      • Вероятность рерайта: {EXCEPTION_REWRITE_PROBABILITY*100}%")
+    print(f"      • Стоп-слова: ❌ ОТКЛЮЧЕНЫ")
 else:
     gigachat = None
 
 user_client = TelegramClient('user_session_oasismus', API_ID, API_HASH)
 media_groups = {}
-
-# Флаг для работы
 is_running = True
 reconnect_delay = 5
+processed_messages = set()  # Для отслеживания обработанных сообщений
 
-def check_ignore_words(text):
-    """Проверка текста на наличие стоп-слов"""
+
+def is_exception_channel(channel_name: str) -> bool:
+    """Проверяет, является ли канал исключением"""
+    return channel_name == EXCEPTION_CHANNEL
+
+def get_post_probability(channel_name: str) -> float:
+    """Получает вероятность публикации для канала"""
+    if is_exception_channel(channel_name):
+        return EXCEPTION_POST_PROBABILITY
+    return DEFAULT_POST_PROBABILITY
+
+def get_rewrite_probability(channel_name: str) -> float:
+    """Получает вероятность рерайта для канала"""
+    if is_exception_channel(channel_name):
+        return EXCEPTION_REWRITE_PROBABILITY
+    return DEFAULT_REWRITE_PROBABILITY
+
+def get_ignore_words(channel_name: str) -> List[str]:
+    """Получает список стоп-слов для канала"""
+    if is_exception_channel(channel_name):
+        return EXCEPTION_IGNORE_WORDS
+    return IGNORE_WORDS
+
+def should_post(channel_name: str) -> bool:
+    """Определяет, нужно ли постить пост из этого канала"""
+    probability = get_post_probability(channel_name)
+    
+    if probability >= 1.0:
+        return True
+    
+    return random.random() < probability
+
+def should_rewrite(channel_name: str) -> bool:
+    """Определяет, нужно ли рерайтить пост из этого канала"""
+    # Даже для исключения рерайт 80%
+    probability = get_rewrite_probability(channel_name)
+    
+    if probability >= 1.0:
+        return True
+    
+    return random.random() < probability
+
+def check_ignore_words(text: str, channel_name: str) -> bool:
+    """Проверка текста на наличие стоп-слов с учетом канала"""
     if not text: 
         return False
+    
+    ignore_words = get_ignore_words(channel_name)
+    
+    # Если для канала нет стоп-слов, сразу возвращаем False
+    if not ignore_words:
+        return False
+    
     text_lower = text.lower()
-    for word in IGNORE_WORDS:
+    for word in ignore_words:
         if word.lower() in text_lower:
             return True
     return False
 
-async def process_text(text: str) -> str:
-    """Обработка текста через GigaChat с защитой всех элементов"""
-    if not USE_GIGACHAT or not gigachat:
-        return text
+async def process_text(text: str, channel_name: str, original_entities: List = None) -> str:
+    """Обработка текста через GigaChat с учетом настроек канала"""
     
-    # Не обрабатываем очень короткие тексты
-    if len(text.strip()) < MIN_TEXT_LENGTH_FOR_REWRITE:
-        print(f"⏭️ Текст слишком короткий ({len(text)} символов), пропускаю рерайт")
-        return text
-    
-    try:
-        loop = asyncio.get_event_loop()
-        rewritten = await loop.run_in_executor(None, gigachat.rewrite_text, text)
-        return rewritten if rewritten else text
-    except Exception as e:
-        print(f"⚠️ Ошибка при рерайте: {e}")
-        return text
-
-async def test_gigachat_connection():
-    """Тест подключения к GigaChat с проверкой всех защит"""
-    print("\n🔍 Тестируем подключение к GigaChat...")
-    
-    if not USE_GIGACHAT or not gigachat:
-        print("❌ GigaChat отключен в настройках")
-        return False
-    
-    # Тестовый текст с эмодзи и разными видами кавычек
-    test_text = """Привет! 👋 Это тест с "важным текстом в двойных кавычках" и 'одинарными кавычками' 
-и ещё «кавычками-елочками» и „лапками“. Проверяем защиту! 🎉 Нужно сохранить всё это без изменений! 👍"""
-    
-    print(f"📝 Оригинальный текст: {test_text}")
-    
-    # Проверяем извлечение защищенных элементов
-    text_with_placeholders, protected = TextProtector.extract_all_protected(test_text)
-    print(f"🔍 Найдено защищенных элементов: {len(protected)}")
-    for placeholder, original in list(protected.items())[:3]:  # Покажем первые 3
-        print(f"   {placeholder} -> {original}")
-    
-    processed = await process_text(test_text)
-    print(f"✨ Обработанный текст: {processed}")
-    
-    # Проверяем, сохранились ли эмодзи
-    emojis_in_result = TextProtector.EMOJI_PATTERN.findall(processed)
-    emojis_in_original = TextProtector.EMOJI_PATTERN.findall(test_text)
-    if len(emojis_in_result) == len(emojis_in_original):
-        print("✅ Эмодзи успешно сохранены!")
+    if USE_GIGACHAT and gigachat and text and len(text.strip()) > MIN_TEXT_LENGTH_FOR_REWRITE:
+        if should_rewrite(channel_name):
+            try:
+                loop = asyncio.get_event_loop()
+                rewritten = await loop.run_in_executor(None, gigachat.rewrite_text, text)
+                
+                if rewritten and rewritten != text:
+                    print("✏️ Текст изменен GigaChat")
+                    return rewritten
+                else:
+                    print("⏭️ Текст не изменен")
+                    if original_entities:
+                        return TextFormatter.preserve_formatting(text, original_entities)
+                    return text
+            except Exception as e:
+                print(f"⚠️ Ошибка при рерайте: {e}")
+                if original_entities:
+                    return TextFormatter.preserve_formatting(text, original_entities)
+                return text
+        else:
+            print("⏭️ Пропускаю рерайт (настройки канала)")
+            if original_entities:
+                return TextFormatter.preserve_formatting(text, original_entities)
+            return text
     else:
-        print(f"⚠️ Эмодзи: было {len(emojis_in_original)}, стало {len(emojis_in_result)}")
-    
-    # Проверяем, сохранились ли кавычки
-    for pattern, _ in TextProtector.QUOTE_PATTERNS:
-        quotes_in_result = re.findall(pattern, processed, re.DOTALL)
-        quotes_in_original = re.findall(pattern, test_text, re.DOTALL)
-        if len(quotes_in_result) != len(quotes_in_original):
-            print(f"⚠️ Кавычки {pattern}: было {len(quotes_in_original)}, стало {len(quotes_in_result)}")
-    
-    if processed != test_text:
-        print("✅ GigaChat работает корректно!")
-        return True
-    else:
-        print("❌ GigaChat не обработал текст")
-        return False
-
-async def show_token_stats():
-    """Показывает статистику использования токенов"""
-    if gigachat:
-        print("\n" + "="*50)
-        print("📊 СТАТИСТИКА ИСПОЛЬЗОВАНИЯ GIGACHAT")
-        print("="*50)
-        print(f"Модель: {GIGACHAT_MODEL}")
-        print(f"Выполнено запросов: {gigachat.requests_count}")
-        print(f"Всего токенов использовано: {gigachat.total_tokens_used}")
-        
-        # Оценка остатка
-        if GIGACHAT_MODEL == "GigaChat" or "Lite" in GIGACHAT_MODEL:
-            limit = 900000
-            remaining = limit - gigachat.total_tokens_used
-            print(f"Лимит: 900 000 токенов")
-            print(f"Осталось примерно: {remaining} токенов")
-            if remaining > 0:
-                print(f"Хватит еще на ~{remaining // 500} постов")
-        elif "Pro" in GIGACHAT_MODEL:
-            limit = 49123
-            remaining = limit - gigachat.total_tokens_used
-            print(f"Лимит: 49 123 токена")
-            print(f"Осталось примерно: {remaining} токенов")
-            if remaining > 0:
-                print(f"Хватит еще на ~{remaining // 500} постов")
-        print("="*50 + "\n")
+        if original_entities:
+            return TextFormatter.preserve_formatting(text, original_entities)
+        return text
 
 def print_qr(url):
-    """Печать QR-кода в консоль"""
     qr = qrcode.QRCode(version=1, box_size=2, border=1)
     qr.add_data(url)
     qr.make(fit=True)
@@ -478,7 +432,6 @@ def print_qr(url):
     print("=" * 50)
 
 async def qr_login_method():
-    """Вход по QR-коду"""
     print("\n📱 Вход по QR-коду:")
     print("1. Открой Telegram на телефоне")
     print("2. Настройки → Устройства")
@@ -508,7 +461,6 @@ async def qr_login_method():
         return False
 
 async def code_login_method():
-    """Вход по коду из SMS"""
     print("\n📱 Вход по коду:")
     try:
         await user_client.send_code_request(PHONE_NUMBER)
@@ -536,45 +488,38 @@ async def code_login_method():
         return False
 
 async def process_album(grouped_id, source_name):
-    """Обрабатывает альбом после сбора всех сообщений"""
     if grouped_id not in media_groups:
         return
     
     album_data = media_groups[grouped_id]
     messages = album_data['messages']
     
-    # Сортируем сообщения по ID
     messages.sort(key=lambda m: m.id)
     
-    # Находим сообщение с текстом
     text_message = None
     for msg in messages:
         if msg.text:
             text_message = msg
             break
     
-    # Проверка на наличие текста
     if not ALLOW_NO_TEXT_POSTS and not text_message:
         print(f"⏭️ Пропускаю альбом из {source_name} (нет текста)")
         del media_groups[grouped_id]
         return
     
-    # Проверяем текст на стоп-слова
-    if text_message and text_message.text and check_ignore_words(text_message.text):
+    if text_message and text_message.text and check_ignore_words(text_message.text, source_name):
         print(f"🚫 Игнорирую альбом из {source_name} (есть стоп-слово)")
         del media_groups[grouped_id]
         return
     
     print(f"📦 Копирую альбом из {len(messages)} элементов из {source_name}")
     
-    # Обрабатываем текст через GigaChat если есть
     caption = None
     if text_message and text_message.text:
-        caption = await process_text(text_message.text)
+        caption = await process_text(text_message.text, source_name, text_message.entities)
         if caption != text_message.text:
             print("✏️ Текст альбома изменен GigaChat")
     
-    # Скачиваем все медиафайлы
     files = []
     from telethon.types import MessageMediaDocument
     
@@ -588,7 +533,6 @@ async def process_album(grouped_id, source_name):
                 file_path = await msg.download_media()
                 files.append(file_path)
     
-    # Отправляем как альбом
     if files:
         try:
             if caption:
@@ -610,7 +554,6 @@ async def process_album(grouped_id, source_name):
         except Exception as e:
             print(f"❌ Ошибка при отправке альбома: {e}")
     
-    # Удаляем временные файлы
     for file_path in files:
         if isinstance(file_path, str) and os.path.exists(file_path):
             try:
@@ -621,8 +564,7 @@ async def process_album(grouped_id, source_name):
     del media_groups[grouped_id]
 
 async def run_bot():
-    """Основная функция"""
-    global is_running
+    global is_running, processed_messages
     
     while is_running:
         try:
@@ -631,12 +573,16 @@ async def run_bot():
             print("="*60)
             print(f"🤖 GigaChat: {'✅ ВКЛЮЧЕН' if USE_GIGACHAT else '❌ ВЫКЛЮЧЕН'}")
             if USE_GIGACHAT:
-                print(f"   Модель: {GIGACHAT_MODEL}")
-                print(f"😊 Защита эмодзи: ✅ ВКЛЮЧЕНА")
-                print(f"📝 Защита кавычек: ✅ ВКЛЮЧЕНА")
-                
-                # Тестируем подключение
-                await test_gigachat_connection()
+                print(f"   Модель: {SELECTED_MODEL}")
+            
+            print(f"\n📊 НАСТРОЙКИ КАНАЛОВ:")
+            print(f"   📍 По умолчанию для всех каналов:")
+            print(f"      • Вероятность поста: {DEFAULT_POST_PROBABILITY*100}%")
+            print(f"      • Вероятность рерайта: {DEFAULT_REWRITE_PROBABILITY*100}%")
+            print(f"   ⭐ Исключение для {EXCEPTION_CHANNEL}:")
+            print(f"      • Вероятность поста: {EXCEPTION_POST_PROBABILITY*100}%")
+            print(f"      • Вероятность рерайта: {EXCEPTION_REWRITE_PROBABILITY*100}%")
+            print(f"      • Стоп-слова: ❌ ОТКЛЮЧЕНЫ")
             
             print(f"📝 Посты без текста: {'❌ ЗАПРЕЩЕНЫ' if not ALLOW_NO_TEXT_POSTS else '✅ РАЗРЕШЕНЫ'}")
             print("="*60 + "\n")
@@ -669,13 +615,12 @@ async def run_bot():
             
             print("✅ Юзер-клиент авторизован")
             
-            # Проверяем каналы-источники
             print("\n🔄 Проверяю каналы-источники:")
             valid_channels = []
             for channel in SOURCE_CHANNELS:
                 try:
                     entity = await user_client.get_entity(channel)
-                    print(f"   ✅ Найден: {channel} (ID: {entity.id})")
+                    print(f"   ✅ Найден: {channel}")
                     valid_channels.append(entity)
                 except Exception as e:
                     print(f"   ❌ Ошибка с {channel}: {e}")
@@ -686,17 +631,33 @@ async def run_bot():
             
             print(f"\n📢 Отслеживаю каналы: {', '.join(SOURCE_CHANNELS)}")
             print(f"📨 Канал-приемник: {TARGET_CHANNEL}")
-            print(f"🚫 Игнорируемые слова: {', '.join(IGNORE_WORDS)}")
             print("🟢 Бот работает... (нажми Ctrl+C для остановки)\n")
 
             @user_client.on(events.NewMessage(chats=valid_channels))
             async def handle_message(event):
                 try:
                     message = event.message
+                    
+                    # Пропускаем уже обработанные сообщения
+                    if message.id in processed_messages:
+                        return
+                    
                     chat = await event.get_chat()
                     source_name = getattr(chat, 'username', str(chat.id))
+
+                    # Проверяем вероятность публикации
+                    if not should_post(source_name):
+                        prob = get_post_probability(source_name) * 100
+                        print(f"⏭️ Пропускаю пост из {source_name} (вероятность {prob}%)")
+                        processed_messages.add(message.id)
+                        return
                     
-                    # Если это часть альбома
+                    # Проверяем стоп-слова с учетом канала
+                    if check_ignore_words(message.text or "", source_name):
+                        print(f"🚫 Игнорирую пост из {source_name} (есть стоп-слово)")
+                        processed_messages.add(message.id)
+                        return
+                    
                     if message.grouped_id:
                         grouped_id = message.grouped_id
                         
@@ -709,24 +670,20 @@ async def run_bot():
                         else:
                             media_groups[grouped_id]['messages'].append(message)
                         
+                        processed_messages.add(message.id)
                         return
                     
-                    # Одиночное сообщение
                     if not ALLOW_NO_TEXT_POSTS and not message.text:
                         print(f"⏭️ Пропускаю пост из {source_name} (нет текста)")
-                        return
-                    
-                    if check_ignore_words(message.text or ""):
-                        print(f"🚫 Игнорирую пост из {source_name} (есть стоп-слово)")
+                        processed_messages.add(message.id)
                         return
                     
                     print(f"📥 Копирую пост из {source_name}")
                     
-                    processed_text = None
-                    if message.text:
-                        processed_text = await process_text(message.text)
-                        if processed_text != message.text:
-                            print("✏️ Текст изменен GigaChat")
+                    processed_text = await process_text(message.text or "", source_name, message.entities)
+                    
+                    if processed_text != message.text:
+                        print("✏️ Текст изменен GigaChat")
                     
                     if message.media:
                         from telethon.types import MessageMediaDocument
@@ -736,7 +693,7 @@ async def run_bot():
                             await user_client.send_file(
                                 TARGET_CHANNEL,
                                 message,
-                                caption=processed_text or "",
+                                caption=processed_text,
                                 parse_mode='md'
                             )
                             print(f"✅ Видео скопировано")
@@ -747,7 +704,7 @@ async def run_bot():
                                 await user_client.send_file(
                                     TARGET_CHANNEL,
                                     file_path,
-                                    caption=processed_text or "",
+                                    caption=processed_text,
                                     parse_mode='md'
                                 )
                                 print(f"✅ Фото скопировано")
@@ -758,14 +715,16 @@ async def run_bot():
                                     except Exception as e:
                                         print(f"⚠️ Не удалось удалить файл: {e}")
                     
-                    elif message.text and processed_text:
+                    elif message.text:
                         await user_client.send_message(
                             TARGET_CHANNEL,
                             processed_text,
                             parse_mode='md'
                         )
                         print(f"✅ Текстовый пост скопирован")
-                            
+                    
+                    processed_messages.add(message.id)
+                    
                 except FloodWaitError as e:
                     print(f"⚠️ Флуд-контроль: ждем {e.seconds}с")
                     await asyncio.sleep(e.seconds)
@@ -793,7 +752,6 @@ async def run_bot():
             continue
 
 async def main():
-    """Главная функция"""
     global is_running
     try:
         await run_bot()
@@ -802,7 +760,12 @@ async def main():
     finally:
         is_running = False
         await user_client.disconnect()
-        await show_token_stats()
+        if USE_GIGACHAT and gigachat:
+            print("\n" + "="*50)
+            print("📊 ИТОГОВАЯ СТАТИСТИКА")
+            print("="*50)
+            print(f"Всего запросов: {gigachat.requests_count}")
+            print(f"Всего токенов использовано: {gigachat.total_tokens_used}")
         print("👋 Сессия закрыта")
 
 if __name__ == '__main__':
