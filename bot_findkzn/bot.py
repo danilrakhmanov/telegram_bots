@@ -163,12 +163,8 @@ def check_ignore_words(text):
 
 def should_take_post(source_name=None):
     """Определяет, нужно ли взять пост"""
-    # Нормализуем имя канала (убираем @ если есть)
-    channel_to_check = source_name.lstrip('@') if source_name else ''
-    full_copy = FULL_COPY_CHANNEL.lstrip('@')
-    
     # Если это канал с полным копированием - берём всегда
-    if channel_to_check == full_copy:
+    if source_name == FULL_COPY_CHANNEL:
         return True
     return random.random() < POST_PROBABILITY
 
@@ -324,8 +320,7 @@ async def run_bot():
             # Выводим информацию о каналах
             print(f"\n📢 Каналы-источники ({len(SOURCE_CHANNELS)} шт.):")
             for i, channel in enumerate(SOURCE_CHANNELS, 1):
-                channel_normalized = channel.lstrip('@')
-                if channel_normalized == FULL_COPY_CHANNEL.lstrip('@'):
+                if channel == FULL_COPY_CHANNEL:
                     print(f"   {i}. {channel} (100% копирование)")
                 else:
                     print(f"   {i}. {channel}")
@@ -350,12 +345,8 @@ async def run_bot():
                     source_name = getattr(chat, 'username', str(chat.id))
                     
                     # Решаем, брать пост или нет
-                    channel_normalized = source_name.lstrip('@') if source_name else ''
-                    full_copy_normalized = FULL_COPY_CHANNEL.lstrip('@')
-                    is_full_copy = channel_normalized == full_copy_normalized
-                    
                     if not should_take_post(source_name):
-                        prob = 100 if is_full_copy else POST_PROBABILITY * 100
+                        prob = 100 if source_name == FULL_COPY_CHANNEL else POST_PROBABILITY * 100
                         print(f"⏭️ Пропускаю пост из {source_name} (не попал в {prob}%)")
                         return
                     
@@ -371,7 +362,7 @@ async def run_bot():
                     final_text = add_promo_links(cleaned_text)
                     
                     await asyncio.sleep(DELAY)
-                    prob = 100 if is_full_copy else POST_PROBABILITY * 100
+                    prob = 100 if source_name == FULL_COPY_CHANNEL else POST_PROBABILITY * 100
                     print(f"📥 Копирую пост из {source_name} (попал в {prob}%)")
                     
                     # Копируем пост с промо-ссылками

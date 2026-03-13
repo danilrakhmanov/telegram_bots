@@ -1,6 +1,7 @@
 import asyncio
 import os
 import qrcode
+import random
 from telethon import TelegramClient, events, errors
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
 import time
@@ -16,14 +17,25 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '8590879937:AAGkSIRqQSi7VGZWpBg9e4bp20Ii
 # СПИСОК КАНАЛОВ-ИСТОЧНИКОВ
 SOURCE_CHANNELS = [
     '@stereoNWS',
+    '@oasis_musp'
 ]
+
+# 👇 НАСТРОЙКА ВЕРОЯТНОСТИ ПУБЛИКАЦИИ ДЛЯ КАЖДОГО КАНАЛА (в процентах)
+# Для каналов, не указанных в словаре, используется DEFAULT_PROBABILITY
+CHANNEL_PROBABILITIES = {
+    '@oasis_musp': 100,  # Для этого канала 100% постов
+    # '@stereoNWS': 60,  # Можно явно указать, если нужно другое значение
+}
+
+# Стандартная вероятность для всех остальных каналов (60%)
+DEFAULT_PROBABILITY = 60
 
 TARGET_CHANNEL = '@oasis_mus'  # Твой канал (куда постим)
 
 # Слова для игнорирования
 IGNORE_WORDS = [
     'реклама', 'реклам', 'промокод', 'скидка',
-    'акция', 'спонсор', 'купон', 'партнерский', '#реклама'
+    'акция', 'спонсор', 'купон', 'партнерский', '#реклама', 'СЛУШАТЬ!', 'ГРЯДУЩИЕ НОВИНКИ'
 ]
 
 # 👇 НАСТРОЙКА ПУБЛИКАЦИИ ПОСТОВ БЕЗ ТЕКСТА
@@ -39,6 +51,34 @@ media_groups = {}
 # Флаг для работы
 is_running = True
 reconnect_delay = 5  # Задержка перед переподключением (сек)
+
+def should_publish_post(source_name, probability_override=None):
+    """
+    Определяет, нужно ли публиковать пост на основе вероятности для канала
+    
+    Args:
+        source_name: имя канала-источника
+        probability_override: если указано, использует эту вероятность вместо настроек
+    
+    Returns:
+        bool: True если нужно публиковать, False если пропустить
+    """
+    if probability_override is not None:
+        probability = probability_override
+    else:
+        # Получаем вероятность для канала из словаря или используем стандартную
+        probability = CHANNEL_PROBABILITIES.get(source_name, DEFAULT_PROBABILITY)
+    
+    # Если вероятность 100% - публикуем всегда
+    if probability >= 100:
+        return True
+    
+    # Если вероятность 0% - никогда не публикуем
+    if probability <= 0:
+        return False
+    
+    # Генерируем случайное число от 1 до 100 и сравниваем с вероятностью
+    return random.randint(1, 100) <= probability
 
 def check_ignore_words(text):
     if not text: return False
@@ -147,6 +187,13 @@ async def process_album(grouped_id, source_name):
         del media_groups[grouped_id]
         return
     
+    # 👇 ПРОВЕРКА ВЕРОЯТНОСТИ ПУБЛИКАЦИИ
+    if not should_publish_post(source_name):
+        probability = CHANNEL_PROBABILITIES.get(source_name, DEFAULT_PROBABILITY)
+        print(f"🎲 Пропускаю альбом из {source_name} (вероятность {probability}% не сработала)")
+        del media_groups[grouped_id]
+        return
+    
     print(f"📦 Копирую альбом из {len(messages)} элементов из {source_name}")
     
     # Скачиваем все медиафайлы с определением типа
@@ -203,6 +250,11 @@ async def run_bot():
         try:
             print("\n🔄 Запуск бота для красивого копирования постов...")
             print(f"📝 Посты без текста: {'❌ ЗАПРЕЩЕНЫ' if not ALLOW_NO_TEXT_POSTS else '✅ РАЗРЕШЕНЫ'}")
+            print(f"\n📊 Настройки вероятности публикации:")
+            for channel in SOURCE_CHANNELS:
+                prob = CHANNEL_PROBABILITIES.get(channel, DEFAULT_PROBABILITY)
+                print(f"   {channel}: {prob}%")
+            print(f"   Остальные каналы: {DEFAULT_PROBABILITY}%\n")
             
             await user_client.connect()
             
@@ -288,6 +340,12 @@ async def run_bot():
                     # Проверяем текст на стоп-слова
                     if check_ignore_words(message.text or ""):
                         print(f"🚫 Игнорирую пост из {source_name} (есть стоп-слово)")
+                        return
+                    
+                    # 👇 ПРОВЕРКА ВЕРОЯТНОСТИ ПУБЛИКАЦИИ
+                    if not should_publish_post(source_name):
+                        probability = CHANNEL_PROBABILITIES.get(source_name, DEFAULT_PROBABILITY)
+                        print(f"🎲 Пропускаю пост из {source_name} (вероятность {probability}% не сработала)")
                         return
                     
                     print(f"📥 Копирую пост из {source_name}")
